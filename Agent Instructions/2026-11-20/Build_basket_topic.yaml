@@ -1,0 +1,249 @@
+kind: AdaptiveDialog
+modelDescription: "Use for ANY request about products for a pet: recommend, suggest, find, show, compare, \"what's good for\", \"do we have\", \"looking for\", or naming a product type (food, treats, cookies, biscuits, chews, toys, litter, beds, supplements), including requests that mention allergies, sensitivities, foods to avoid, life stage, size, breed or health needs."
+beginDialog:
+  kind: OnRecognizedIntent
+  id: main
+  intent: {}
+  actions:
+    - kind: SearchAndSummarizeContent
+      id: zMRiN0
+      displayName: Get basket plan
+      latencyMessageSettings:
+        allowLatencyMessage: false
+
+      autoSend: false
+      variable: Topic.Plan
+      userInput: "=\"Basket profile for: \" & System.Activity.Text & \". Reply on ONE line with fields separated by |: profile name | pet search words (pet type, age, size, breed if named, foods to avoid as chicken-free etc.) | then for each basket item: item name | item Search line. Item 1 is the category asked about. List up to 5 items in the profile's order. If the profile has fewer, list only those. Never list Treat of the Month as an item. No other text.\""
+      additionalInstructions:
+      fileSearchDataSource:
+        searchFilesMode:
+          kind: SearchSpecificFiles
+          files:
+            - ca_agent.file.Basket_Profiles.md_xS8
+
+      knowledgeSources:
+        kind: SearchSpecificKnowledgeSources
+
+      applyModelKnowledgeSetting: false
+
+    - kind: SetVariable
+      id: setVariable_MDltu8
+      displayName: Split Plan
+      variable: Topic.Lines
+      value: =Split(Topic.Plan, "|")
+
+    - kind: SetMultipleVariables
+      id: setVariable_LANasR
+      displayName: Save plan fields
+      assignments:
+        - variable: Topic.ProfileName
+          value: =IfError(Trim(Substitute(Index(Topic.Lines, 1).Value, "Profile:", "")), "")
+
+        - variable: Topic.PetDetails
+          value: =IfError(Trim(Index(Topic.Lines, 2).Value), "")
+
+        - variable: Topic.Name1
+          value: =IfError(Trim(Index(Topic.Lines, 3).Value), "")
+
+        - variable: Topic.Search1
+          value: =IfError(Trim(Index(Topic.Lines, 4).Value), System.Activity.Text)
+
+        - variable: Topic.Name2
+          value: =IfError(Trim(Index(Topic.Lines, 5).Value), "")
+
+        - variable: Topic.Search2
+          value: =IfError(Trim(Index(Topic.Lines, 6).Value), "")
+
+        - variable: Topic.Name3
+          value: =IfError(Trim(Index(Topic.Lines, 7).Value), "")
+
+        - variable: Topic.Search3
+          value: =IfError(Trim(Index(Topic.Lines, 8).Value), "")
+
+        - variable: Topic.Name4
+          value: =IfError(Trim(Index(Topic.Lines, 9).Value), "")
+
+        - variable: Topic.Search4
+          value: =IfError(Trim(Index(Topic.Lines, 10).Value), "")
+
+        - variable: Topic.Name5
+          value: =IfError(Trim(Index(Topic.Lines, 11).Value), "")
+
+        - variable: Topic.Search5
+          value: =IfError(Trim(Index(Topic.Lines, 12).Value), "")
+
+    - kind: InvokeAIBuilderModelAction
+      id: invokeAIBuilderModelAction_V3pO6s
+      displayName: Write intros
+      input:
+        binding:
+          Categories: =Topic.Name1 & " | " & Topic.Name2 & " | " & Topic.Name3 & " | " & Topic.Name4 & " | " & Topic.Name5
+          Profile: =Topic.ProfileName
+          Request: =System.Activity.Text
+
+      output:
+        binding:
+          predictionOutput: Topic.IntroOut
+
+      aIModelId: 57a2808c-99ed-4fd8-8854-2fccfa871bdf
+
+    - kind: SetVariable
+      id: setVariable_CIgtWc
+      displayName: Split intros
+      variable: Topic.IntroLines
+      value: =Split(Topic.IntroOut.text, "|")
+
+    - kind: SetMultipleVariables
+      id: setVariable_l307I5
+      displayName: Save intros
+      assignments:
+        - variable: Topic.Intro
+          value: =IfError(Trim(Index(Topic.IntroLines, 1).Value), "")
+
+        - variable: Topic.CatIntro1
+          value: =IfError(Trim(Index(Topic.IntroLines, 2).Value), "")
+
+        - variable: Topic.CatIntro2
+          value: =IfError(Trim(Index(Topic.IntroLines, 3).Value), "")
+
+        - variable: Topic.CatIntro3
+          value: =IfError(Trim(Index(Topic.IntroLines, 4).Value), "")
+
+        - variable: Topic.CatIntro4
+          value: =IfError(Trim(Index(Topic.IntroLines, 5).Value), "")
+
+        - variable: Topic.CatIntro5
+          value: =IfError(Trim(Index(Topic.IntroLines, 6).Value), "")
+
+    - kind: SendActivity
+      id: sendActivity_jMaaf3
+      displayName: Show Profile
+      activity:
+        value: "=Topic.Intro & Char(10) & Char(10) & \"Profile: \" & Topic.ProfileName & Char(10) & \"In this basket: \" & Topic.Name1 & \" · Treat of the Month\" & If(IsBlank(Topic.Name2), \"\", \" · \" & Topic.Name2) & If(IsBlank(Topic.Name3), \"\", \" · \" & Topic.Name3) & If(IsBlank(Topic.Name4), \"\", \" · \" & Topic.Name4) & If(IsBlank(Topic.Name5), \"\", \" · \" & Topic.Name5)"
+        text:
+          - "{Topic.Intro & Char(10) & Char(10) & \"Profile: \" & Topic.ProfileName & Char(10) & \"In this basket: \" & Topic.Name1 & \" · Treat of the Month\" & If(IsBlank(Topic.Name2), \"\", \" · \" & Topic.Name2) & If(IsBlank(Topic.Name3), \"\", \" · \" & Topic.Name3) & If(IsBlank(Topic.Name4), \"\", \" · \" & Topic.Name4) & If(IsBlank(Topic.Name5), \"\", \" · \" & Topic.Name5)}"
+
+    - kind: SendActivity
+      id: sendActivity_6lagBm
+      displayName: Cat 1 heading
+      activity: "{\"**\" & Topic.Name1 & \"**\" & Char(10) & Topic.CatIntro1}"
+
+    - kind: SearchAndSummarizeContent
+      id: CUIWtU
+      displayName: Cat.1 search
+      autoSend: false
+      variable: Topic.Result1
+      userInput: =System.Activity.Text
+      moderationLevel: Low
+      additionalInstructions: Answer with 5 different products from www.petvalu.ca product pages that match the request. For each, give the full product name, rating and review count if shown, and key features. No intro.
+      fileSearchDataSource:
+        searchFilesMode:
+          kind: SearchSpecificFiles
+          files:
+            - ca_agent.file.Pet_Valu_Brands.md_g7a
+            - ca_agent.file.PerformatrinUltraFreeze-DriedRawSTORYBOARD.md_Okv
+            - ca_agent.file.CulinaryConversationGuide_EN.md_iuX
+            - ca_agent.file.CourseDescription1.md_pmD
+            - ca_agent.file.CourseDescription.md_DJ9
+            - ca_agent.file.26_Gate5.5_EnthusiastCulinaryShelf-StableFoods_Storyboard.md_zds
+            - ca_agent.file.26_Gate8.8_SmallAnimalExpertFeedingSolutions_Storyboard.md_q_J
+            - ca_agent.file.26_Gate6.2_Enthusiast_SmallAnimal_Basic.md_rF4
+            - ca_agent.file.26_Gate4.4_PerformatrinUltra_Storyboard.md_Wf_
+            - ca_agent.file.26_Gate6.3_Enthusiast_HerptileCareGuide.md_-iZ
+            - ca_agent.file.26_Gate5.4_EnthusiastCulinaryFrozenFoods_Storyboard.md_zhc
+            - ca_agent.file.PerformatrinPrimePlaybook_trim.md_G9f
+            - ca_agent.file.CulinaryFrozenRaw_ProductInformationSheet_Final.md_MAY
+            - ca_agent.file.26_NutritionalCalculations_Storyboard.md_LKr
+            - ca_agent.file.26_Gate4.2_PerformatrinPrime_Storyboard.md_PCW
+            - ca_agent.file.26_Gate6.1_Enthusiast_FishCompatabilityChart.md_oJ_
+            - ca_agent.file.26_Gate4.1_OurBrands_Overview_Storyboard.md_LVz
+            - ca_agent.file.26_Gate6.1_Enthusiast_Fish_Storyboard.md_oAH
+            - ca_agent.file.Perf-Tok_Part1_Storyboard_FINAL.md_EJh
+            - ca_agent.file.26_Gate6.4_Enthusiast_Bird_Storyboard.md_eKN
+
+      knowledgeSources:
+        kind: SearchSpecificKnowledgeSources
+        knowledgeSources:
+          - ca_agent.topic.PetValuProductPages_PNROqchFSdJmKy1uYfQJZ
+          - ca_agent.knowledge.PublicSiteSearchSource.2
+
+      applyModelKnowledgeSetting: false
+      responseCaptureType: FullResponse
+
+    - kind: InvokeAIBuilderModelAction
+      id: invokeAIBuilderModelAction_CPPn9J
+      displayName: Cat 1 format
+      input:
+        binding:
+          Request: =System.Activity.Text
+          Results: =JSON(Topic.Result1)
+
+      output:
+        binding:
+          predictionOutput: Topic.Cards1
+
+      aIModelId: 0ebaeea6-27e7-43bc-96e7-a6b73595c04f
+
+    - kind: SendActivity
+      id: sendActivity_N5Recx
+      displayName: Cat 1 show
+      activity: "{Topic.Cards1.text}"
+
+    - kind: SendActivity
+      id: sendActivity_zAU3ld
+      displayName: TOTM heading
+      activity: "**Treat of the Month**"
+
+    - kind: SearchAndSummarizeContent
+      id: lniZhc
+      displayName: TOTM search
+      autoSend: false
+      variable: Topic.ResultTOTM
+      userInput: ="Treat of the Month " & If(StartsWith(Upper(Topic.ProfileName), "CAT"), "cat", "dog") & " treat product"
+      moderationLevel: Low
+      additionalInstructions:
+      fileSearchDataSource:
+        searchFilesMode:
+          kind: DoNotSearchFiles
+
+      knowledgeSources:
+        kind: SearchSpecificKnowledgeSources
+        knowledgeSources:
+          - ca_agent.topic.TreatoftheMonth_QkOUCcZo9fMtxqIM_1s4Z
+
+      applyModelKnowledgeSetting: false
+      responseCaptureType: FullResponse
+
+    - kind: ConditionGroup
+      id: conditionGroup_jHakOR
+      conditions:
+        - id: conditionItem_trJaNC
+          condition: =!IsBlank(Topic.ResultTOTM)
+          displayName: TOTM found?
+          actions:
+            - kind: InvokeAIBuilderModelAction
+              id: jyKSqA
+              displayName: TOTM Format
+              input:
+                binding:
+                  Request: =System.Activity.Text
+                  Results: =JSON(Topic.ResultTOTM)
+
+              output:
+                binding:
+                  predictionOutput: Topic.Cards1
+
+              aIModelId: 0ebaeea6-27e7-43bc-96e7-a6b73595c04f
+
+            - kind: SendActivity
+              id: WyVq3b
+              displayName: TOTM show
+              activity: "{Topic.Cards1.text}"
+
+      elseActions:
+        - kind: SendActivity
+          id: sendActivity_ZY8Z7i
+          activity: We couldn't load this month's treat. Check the Treat of the Month shelf in store.
+
+inputType: {}
+outputType: {}
