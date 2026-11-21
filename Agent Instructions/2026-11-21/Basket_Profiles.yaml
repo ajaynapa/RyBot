@@ -1,0 +1,698 @@
+kind: AdaptiveDialog
+modelDescription: |-
+  Use ONLY when the ACE asks for products for a pet: "recommend", "suggest", "what should I get", "what do I need for", "what's good for", "do we have", "looking for", or names a product type (food, treats, chews, toys, litter, beds, carriers, supplements). Includes requests that mention allergies, foods to avoid, life stage, size, breed or needs.
+  Do NOT use for general pet-care or how-to questions (e.g. "travelling with my cat to the vet", "how do I trim my dog's nails", "how often should I feed my kitten"), policy or store questions, specific product lookups by name or ID, or symptom and health questions.
+beginDialog:
+  kind: OnRecognizedIntent
+  id: main
+  intent: {}
+  actions:
+    - kind: SearchAndSummarizeContent
+      id: zMRiN0
+      displayName: Get basket plan
+      latencyMessageSettings:
+        allowLatencyMessage: false
+
+      autoSend: false
+      variable: Topic.PlanRaw
+      userInput: "=\"Basket profile for: \" & System.Activity.Text & \". Reply on ONE line with fields separated by |: profile name (the ### heading) | pet search words (pet type, age, size, breed if named, foods to avoid as chicken-free etc.) | then for each basket item: item title (the bold numbered title, e.g. Food without chicken) | item Search line. Item 1 is the category asked about. List up to 5 items in the profile's order. Never list Treat of the Month. No 'Item 1' labels. No other text.\""
+      additionalInstructions:
+      fileSearchDataSource:
+        searchFilesMode:
+          kind: SearchSpecificFiles
+          files:
+            - ca_agent.file.Basket_Profiles.md_PAk
+
+      knowledgeSources:
+        kind: SearchSpecificKnowledgeSources
+
+      applyModelKnowledgeSetting: false
+      responseCaptureType: FullResponse
+
+    - kind: InvokeAIBuilderModelAction
+      id: invokeAIBuilderModelAction_J3KfyF
+      displayName: Make plan
+      input:
+        binding:
+          Profile: =JSON(Topic.PlanRaw)
+          Request: =System.Activity.Text
+
+      output:
+        binding:
+          predictionOutput: Topic.PlanOut
+
+      aIModelId: 51c2e7ad-cdab-40c2-afb3-c98b3376d1a6
+
+    - kind: SetVariable
+      id: setVariable_MDltu8
+      displayName: Split Plan
+      variable: Topic.Lines
+      value: =Split(Topic.PlanOut.text, "|")
+
+    - kind: SetMultipleVariables
+      id: setVariable_LANasR
+      displayName: Save plan fields
+      assignments:
+        - variable: Topic.ProfileName
+          value: =IfError(Trim(Substitute(Index(Topic.Lines, 1).Value, "Profile:", "")), "")
+
+        - variable: Topic.PetDetails
+          value: =IfError(Trim(Index(Topic.Lines, 2).Value), "")
+
+        - variable: Topic.Name1
+          value: "=With({x: IfError(Trim(Index(Topic.Lines, 3).Value), \"\")}, If(StartsWith(x, \"Item \"), Trim(Mid(x, Find(\":\", x) + 1)), x))"
+
+        - variable: Topic.Search1
+          value: =IfError(Trim(Index(Topic.Lines, 4).Value), System.Activity.Text)
+
+        - variable: Topic.Name2
+          value: "=With({x: IfError(Trim(Index(Topic.Lines, 5).Value), \"\")}, If(StartsWith(x, \"Item \"), Trim(Mid(x, Find(\":\", x) + 1)), x))"
+
+        - variable: Topic.Search2
+          value: =IfError(Trim(Index(Topic.Lines, 6).Value), "")
+
+        - variable: Topic.Name3
+          value: "=With({x: IfError(Trim(Index(Topic.Lines, 7).Value), \"\")}, If(StartsWith(x, \"Item \"), Trim(Mid(x, Find(\":\", x) + 1)), x))"
+
+        - variable: Topic.Search3
+          value: =IfError(Trim(Index(Topic.Lines, 8).Value), "")
+
+        - variable: Topic.Name4
+          value: "=With({x: IfError(Trim(Index(Topic.Lines, 9).Value), \"\")}, If(StartsWith(x, \"Item \"), Trim(Mid(x, Find(\":\", x) + 1)), x))"
+
+        - variable: Topic.Search4
+          value: =IfError(Trim(Index(Topic.Lines, 10).Value), "")
+
+        - variable: Topic.Name5
+          value: "=With({x: IfError(Trim(Index(Topic.Lines, 11).Value), \"\")}, If(StartsWith(x, \"Item \"), Trim(Mid(x, Find(\":\", x) + 1)), x))"
+
+        - variable: Topic.Search5
+          value: =IfError(Trim(Index(Topic.Lines, 12).Value), "")
+
+    - kind: InvokeAIBuilderModelAction
+      id: invokeAIBuilderModelAction_V3pO6s
+      displayName: Write intros
+      input:
+        binding:
+          Categories: =Topic.Name1 & " | " & Topic.Name2 & " | " & Topic.Name3 & " | " & Topic.Name4 & " | " & Topic.Name5
+          Profile: =Topic.ProfileName
+          Request: =System.Activity.Text
+
+      output:
+        binding:
+          predictionOutput: Topic.IntroOut
+
+      aIModelId: 57a2808c-99ed-4fd8-8854-2fccfa871bdf
+
+    - kind: SetVariable
+      id: setVariable_CIgtWc
+      displayName: Split intros
+      variable: Topic.IntroLines
+      value: =Split(Topic.IntroOut.text, "|")
+
+    - kind: SetMultipleVariables
+      id: setVariable_l307I5
+      displayName: Save intros
+      assignments:
+        - variable: Topic.Intro
+          value: =IfError(Trim(Index(Topic.IntroLines, 1).Value), "")
+
+        - variable: Topic.CatIntro1
+          value: =IfError(Trim(Index(Topic.IntroLines, 2).Value), "")
+
+        - variable: Topic.CatIntro2
+          value: =IfError(Trim(Index(Topic.IntroLines, 3).Value), "")
+
+        - variable: Topic.CatIntro3
+          value: =IfError(Trim(Index(Topic.IntroLines, 4).Value), "")
+
+        - variable: Topic.CatIntro4
+          value: =IfError(Trim(Index(Topic.IntroLines, 5).Value), "")
+
+        - variable: Topic.CatIntro5
+          value: =IfError(Trim(Index(Topic.IntroLines, 6).Value), "")
+
+    - kind: SendActivity
+      id: sendActivity_jMaaf3
+      displayName: Show Profile
+      activity: "{Topic.Intro & Char(10) & Char(10) & \"Profile: \" & Topic.ProfileName & Char(10) & Char(10) & \"In this basket: \" & Topic.Name1 & If(IsBlank(Topic.Name2), \"\", \" · \" & Topic.Name2) & If(IsBlank(Topic.Name3), \"\", \" · \" & Topic.Name3) & If(IsBlank(Topic.Name4), \"\", \" · \" & Topic.Name4) & If(IsBlank(Topic.Name5), \"\", \" · \" & Topic.Name5)}"
+
+    - kind: SendActivity
+      id: sendActivity_6lagBm
+      displayName: Cat 1 heading
+      activity: "{\"**\" & Topic.Name1 & \"**\" & Char(10) & Char(10) & Topic.CatIntro1}"
+
+    - kind: SearchAndSummarizeContent
+      id: CUIWtU
+      displayName: Cat.1 search
+      autoSend: false
+      variable: Topic.Result1
+      userInput: =System.Activity.Text
+      moderationLevel: Low
+      additionalInstructions: List up to 5 different products from www.petvalu.ca that match the request. For each, give the full product name, rating and review count if shown, and key features.
+      fileSearchDataSource:
+        searchFilesMode:
+          kind: DoNotSearchFiles
+
+      knowledgeSources:
+        kind: SearchSpecificKnowledgeSources
+        knowledgeSources:
+          - ca_agent.knowledge.PublicSiteSearchSource.2
+
+      applyModelKnowledgeSetting: false
+      responseCaptureType: FullResponse
+
+    - kind: ConditionGroup
+      id: cat1FoundGroup
+      conditions:
+        - id: cat1FoundItem
+          condition: =!IsBlank(Topic.Result1)
+          displayName: Cat 1 found?
+          actions:
+            - kind: InvokeAIBuilderModelAction
+              id: invokeAIBuilderModelAction_CPPn9J
+              displayName: Cat 1 format
+              input:
+                binding:
+                  Request: =System.Activity.Text
+                  Results: =JSON(Topic.Result1)
+
+              output:
+                binding:
+                  predictionOutput: Topic.Cards1
+
+              aIModelId: 0ebaeea6-27e7-43bc-96e7-a6b73595c04f
+
+            - kind: SendActivity
+              id: sendActivity_N5Recx
+              displayName: Cat 1 show
+              activity: "{Topic.Cards1.text}"
+
+      elseActions:
+        - kind: SearchAndSummarizeContent
+          id: cat1Retry
+          displayName: Cat 1 retry
+          autoSend: false
+          variable: Topic.Result1b
+          userInput: ="Pet Valu " & Topic.Name1 & " for " & Topic.PetDetails
+          moderationLevel: Low
+          additionalInstructions: List up to 5 different products from www.petvalu.ca that match the request. For each, give the full product name, rating and review count if shown, and key features.
+          fileSearchDataSource:
+            searchFilesMode:
+              kind: DoNotSearchFiles
+
+          knowledgeSources:
+            kind: SearchSpecificKnowledgeSources
+            knowledgeSources:
+              - ca_agent.knowledge.PublicSiteSearchSource.2
+
+          applyModelKnowledgeSetting: false
+          responseCaptureType: FullResponse
+
+        - kind: ConditionGroup
+          id: cat1RetryFoundGroup
+          conditions:
+            - id: cat1RetryFoundItem
+              condition: =!IsBlank(Topic.Result1b)
+              displayName: Cat 1 retry found?
+              actions:
+                - kind: InvokeAIBuilderModelAction
+                  id: cat1RetryFormat
+                  displayName: Cat 1 retry format
+                  input:
+                    binding:
+                      Request: =System.Activity.Text
+                      Results: =JSON(Topic.Result1b)
+
+                  output:
+                    binding:
+                      predictionOutput: Topic.Cards1
+
+                  aIModelId: 0ebaeea6-27e7-43bc-96e7-a6b73595c04f
+
+                - kind: SendActivity
+                  id: cat1RetryShow
+                  displayName: Cat 1 retry show
+                  activity: "{Topic.Cards1.text}"
+
+          elseActions:
+            - kind: SendActivity
+              id: cat1NoMatch
+              displayName: Cat 1 no match
+              activity: We couldn't find products for this one right now. Try searching petvalu.ca for it.
+
+    - kind: ConditionGroup
+      id: hasCat2Group
+      conditions:
+        - id: hasCat2Item
+          condition: =!IsBlank(Topic.Name2)
+          displayName: Has cat 2?
+          actions:
+            - kind: SendActivity
+              id: cat2Heading
+              displayName: Cat 2 heading
+              activity: "{\"**\" & Topic.Name2 & \"**\" & Char(10) & Char(10) & Topic.CatIntro2}"
+
+            - kind: SearchAndSummarizeContent
+              id: cat2Search
+              displayName: Cat 2 search
+              autoSend: false
+              variable: Topic.Result2
+              userInput: =If(IsBlank(Topic.Search2), "recommend " & Topic.Name2 & " for " & Topic.PetDetails, "recommend " & Topic.Search2)
+              moderationLevel: Low
+              additionalInstructions: List up to 3 products from www.petvalu.ca that match the request. For each, give the full product name, rating and review count if shown, and key features.
+              fileSearchDataSource:
+                searchFilesMode:
+                  kind: DoNotSearchFiles
+
+              knowledgeSources:
+                kind: SearchSpecificKnowledgeSources
+                knowledgeSources:
+                  - ca_agent.knowledge.PublicSiteSearchSource.2
+
+              applyModelKnowledgeSetting: false
+              responseCaptureType: FullResponse
+
+            - kind: ConditionGroup
+              id: cat2FoundGroup
+              conditions:
+                - id: cat2FoundItem
+                  condition: =!IsBlank(Topic.Result2)
+                  displayName: Cat 2 found?
+                  actions:
+                    - kind: InvokeAIBuilderModelAction
+                      id: cat2Format
+                      displayName: Cat 2 format
+                      input:
+                        binding:
+                          Request: =System.Activity.Text
+                          Results: =JSON(Topic.Result2)
+
+                      output:
+                        binding:
+                          predictionOutput: Topic.Cards1
+
+                      aIModelId: 0ebaeea6-27e7-43bc-96e7-a6b73595c04f
+
+                    - kind: SendActivity
+                      id: cat2Show
+                      displayName: Cat 2 show
+                      activity: "{Topic.Cards1.text}"
+
+              elseActions:
+                - kind: SearchAndSummarizeContent
+                  id: cat2Retry
+                  displayName: Cat 2 retry
+                  autoSend: false
+                  variable: Topic.Result2b
+                  userInput: ="recommend " & Topic.Name2 & " " & Lower(Trim(First(Split(Topic.ProfileName, "·")).Value))
+                  moderationLevel: Low
+                  additionalInstructions: List up to 3 products from www.petvalu.ca that match the request. For each, give the full product name, rating and review count if shown, and key features.
+                  fileSearchDataSource:
+                    searchFilesMode:
+                      kind: DoNotSearchFiles
+
+                  knowledgeSources:
+                    kind: SearchSpecificKnowledgeSources
+                    knowledgeSources:
+                      - ca_agent.knowledge.PublicSiteSearchSource.2
+
+                  applyModelKnowledgeSetting: false
+                  responseCaptureType: FullResponse
+
+                - kind: ConditionGroup
+                  id: cat2RetryFoundGroup
+                  conditions:
+                    - id: cat2RetryFoundItem
+                      condition: =!IsBlank(Topic.Result2b)
+                      displayName: Cat 2 retry found?
+                      actions:
+                        - kind: InvokeAIBuilderModelAction
+                          id: cat2RetryFormat
+                          displayName: Cat 2 retry format
+                          input:
+                            binding:
+                              Request: =System.Activity.Text
+                              Results: =JSON(Topic.Result2b)
+
+                          output:
+                            binding:
+                              predictionOutput: Topic.Cards1
+
+                          aIModelId: 0ebaeea6-27e7-43bc-96e7-a6b73595c04f
+
+                        - kind: SendActivity
+                          id: cat2RetryShow
+                          displayName: Cat 2 retry show
+                          activity: "{Topic.Cards1.text}"
+
+                  elseActions:
+                    - kind: SendActivity
+                      id: cat2NoMatch
+                      displayName: Cat 2 no match
+                      activity: We couldn't find products for this one right now. Try searching petvalu.ca for it.
+
+    - kind: ConditionGroup
+      id: hasCat3Group
+      conditions:
+        - id: hasCat3Item
+          condition: =!IsBlank(Topic.Name3)
+          displayName: Has cat 3?
+          actions:
+            - kind: SendActivity
+              id: cat3Heading
+              displayName: Cat 3 heading
+              activity: "{\"**\" & Topic.Name3 & \"**\" & Char(10) & Char(10) & Topic.CatIntro3}"
+
+            - kind: SearchAndSummarizeContent
+              id: cat3Search
+              displayName: Cat 3 search
+              autoSend: false
+              variable: Topic.Result3
+              userInput: =If(IsBlank(Topic.Search3), "recommend " & Topic.Name3 & " for " & Topic.PetDetails, "recommend " & Topic.Search3)
+              moderationLevel: Low
+              additionalInstructions: List up to 3 products from www.petvalu.ca that match the request. For each, give the full product name, rating and review count if shown, and key features.
+              fileSearchDataSource:
+                searchFilesMode:
+                  kind: DoNotSearchFiles
+
+              knowledgeSources:
+                kind: SearchSpecificKnowledgeSources
+                knowledgeSources:
+                  - ca_agent.knowledge.PublicSiteSearchSource.2
+
+              applyModelKnowledgeSetting: false
+              responseCaptureType: FullResponse
+
+            - kind: ConditionGroup
+              id: cat3FoundGroup
+              conditions:
+                - id: cat3FoundItem
+                  condition: =!IsBlank(Topic.Result3)
+                  displayName: Cat 3 found?
+                  actions:
+                    - kind: InvokeAIBuilderModelAction
+                      id: cat3Format
+                      displayName: Cat 3 format
+                      input:
+                        binding:
+                          Request: =System.Activity.Text
+                          Results: =JSON(Topic.Result3)
+
+                      output:
+                        binding:
+                          predictionOutput: Topic.Cards1
+
+                      aIModelId: 0ebaeea6-27e7-43bc-96e7-a6b73595c04f
+
+                    - kind: SendActivity
+                      id: cat3Show
+                      displayName: Cat 3 show
+                      activity: "{Topic.Cards1.text}"
+
+              elseActions:
+                - kind: SearchAndSummarizeContent
+                  id: cat3Retry
+                  displayName: Cat 3 retry
+                  autoSend: false
+                  variable: Topic.Result3b
+                  userInput: ="recommend " & Topic.Name3 & " " & Lower(Trim(First(Split(Topic.ProfileName, "·")).Value))
+                  moderationLevel: Low
+                  additionalInstructions: List up to 3 products from www.petvalu.ca that match the request. For each, give the full product name, rating and review count if shown, and key features.
+                  fileSearchDataSource:
+                    searchFilesMode:
+                      kind: DoNotSearchFiles
+
+                  knowledgeSources:
+                    kind: SearchSpecificKnowledgeSources
+                    knowledgeSources:
+                      - ca_agent.knowledge.PublicSiteSearchSource.2
+
+                  applyModelKnowledgeSetting: false
+                  responseCaptureType: FullResponse
+
+                - kind: ConditionGroup
+                  id: cat3RetryFoundGroup
+                  conditions:
+                    - id: cat3RetryFoundItem
+                      condition: =!IsBlank(Topic.Result3b)
+                      displayName: Cat 3 retry found?
+                      actions:
+                        - kind: InvokeAIBuilderModelAction
+                          id: cat3RetryFormat
+                          displayName: Cat 3 retry format
+                          input:
+                            binding:
+                              Request: =System.Activity.Text
+                              Results: =JSON(Topic.Result3b)
+
+                          output:
+                            binding:
+                              predictionOutput: Topic.Cards1
+
+                          aIModelId: 0ebaeea6-27e7-43bc-96e7-a6b73595c04f
+
+                        - kind: SendActivity
+                          id: cat3RetryShow
+                          displayName: Cat 3 retry show
+                          activity: "{Topic.Cards1.text}"
+
+                  elseActions:
+                    - kind: SendActivity
+                      id: cat3NoMatch
+                      displayName: Cat 3 no match
+                      activity: We couldn't find products for this one right now. Try searching petvalu.ca for it.
+
+    - kind: ConditionGroup
+      id: hasCat4Group
+      conditions:
+        - id: hasCat4Item
+          condition: =!IsBlank(Topic.Name4)
+          displayName: Has cat 4?
+          actions:
+            - kind: SendActivity
+              id: cat4Heading
+              displayName: Cat 4 heading
+              activity: "{\"**\" & Topic.Name4 & \"**\" & Char(10) & Char(10) & Topic.CatIntro4}"
+
+            - kind: SearchAndSummarizeContent
+              id: cat4Search
+              displayName: Cat 4 search
+              autoSend: false
+              variable: Topic.Result4
+              userInput: =If(IsBlank(Topic.Search4), "recommend " & Topic.Name4 & " for " & Topic.PetDetails, "recommend " & Topic.Search4)
+              moderationLevel: Low
+              additionalInstructions: List up to 3 products from www.petvalu.ca that match the request. For each, give the full product name, rating and review count if shown, and key features.
+              fileSearchDataSource:
+                searchFilesMode:
+                  kind: DoNotSearchFiles
+
+              knowledgeSources:
+                kind: SearchSpecificKnowledgeSources
+                knowledgeSources:
+                  - ca_agent.knowledge.PublicSiteSearchSource.2
+
+              applyModelKnowledgeSetting: false
+              responseCaptureType: FullResponse
+
+            - kind: ConditionGroup
+              id: cat4FoundGroup
+              conditions:
+                - id: cat4FoundItem
+                  condition: =!IsBlank(Topic.Result4)
+                  displayName: Cat 4 found?
+                  actions:
+                    - kind: InvokeAIBuilderModelAction
+                      id: cat4Format
+                      displayName: Cat 4 format
+                      input:
+                        binding:
+                          Request: =System.Activity.Text
+                          Results: =JSON(Topic.Result4)
+
+                      output:
+                        binding:
+                          predictionOutput: Topic.Cards1
+
+                      aIModelId: 0ebaeea6-27e7-43bc-96e7-a6b73595c04f
+
+                    - kind: SendActivity
+                      id: cat4Show
+                      displayName: Cat 4 show
+                      activity: "{Topic.Cards1.text}"
+
+              elseActions:
+                - kind: SearchAndSummarizeContent
+                  id: cat4Retry
+                  displayName: Cat 4 retry
+                  autoSend: false
+                  variable: Topic.Result4b
+                  userInput: ="recommend " & Topic.Name4 & " " & Lower(Trim(First(Split(Topic.ProfileName, "·")).Value))
+                  moderationLevel: Low
+                  additionalInstructions: List up to 3 products from www.petvalu.ca that match the request. For each, give the full product name, rating and review count if shown, and key features.
+                  fileSearchDataSource:
+                    searchFilesMode:
+                      kind: DoNotSearchFiles
+
+                  knowledgeSources:
+                    kind: SearchSpecificKnowledgeSources
+                    knowledgeSources:
+                      - ca_agent.knowledge.PublicSiteSearchSource.2
+
+                  applyModelKnowledgeSetting: false
+                  responseCaptureType: FullResponse
+
+                - kind: ConditionGroup
+                  id: cat4RetryFoundGroup
+                  conditions:
+                    - id: cat4RetryFoundItem
+                      condition: =!IsBlank(Topic.Result4b)
+                      displayName: Cat 4 retry found?
+                      actions:
+                        - kind: InvokeAIBuilderModelAction
+                          id: cat4RetryFormat
+                          displayName: Cat 4 retry format
+                          input:
+                            binding:
+                              Request: =System.Activity.Text
+                              Results: =JSON(Topic.Result4b)
+
+                          output:
+                            binding:
+                              predictionOutput: Topic.Cards1
+
+                          aIModelId: 0ebaeea6-27e7-43bc-96e7-a6b73595c04f
+
+                        - kind: SendActivity
+                          id: cat4RetryShow
+                          displayName: Cat 4 retry show
+                          activity: "{Topic.Cards1.text}"
+
+                  elseActions:
+                    - kind: SendActivity
+                      id: cat4NoMatch
+                      displayName: Cat 4 no match
+                      activity: We couldn't find products for this one right now. Try searching petvalu.ca for it.
+
+    - kind: ConditionGroup
+      id: hasCat5Group
+      conditions:
+        - id: hasCat5Item
+          condition: =!IsBlank(Topic.Name5)
+          displayName: Has cat 5?
+          actions:
+            - kind: SendActivity
+              id: cat5Heading
+              displayName: Cat 5 heading
+              activity: "{\"**\" & Topic.Name5 & \"**\" & Char(10) & Char(10) & Topic.CatIntro5}"
+
+            - kind: SearchAndSummarizeContent
+              id: cat5Search
+              displayName: Cat 5 search
+              autoSend: false
+              variable: Topic.Result5
+              userInput: =If(IsBlank(Topic.Search5), "recommend " & Topic.Name5 & " for " & Topic.PetDetails, "recommend " & Topic.Search5)
+              moderationLevel: Low
+              additionalInstructions: List up to 3 products from www.petvalu.ca that match the request. For each, give the full product name, rating and review count if shown, and key features.
+              fileSearchDataSource:
+                searchFilesMode:
+                  kind: DoNotSearchFiles
+
+              knowledgeSources:
+                kind: SearchSpecificKnowledgeSources
+                knowledgeSources:
+                  - ca_agent.knowledge.PublicSiteSearchSource.2
+
+              applyModelKnowledgeSetting: false
+              responseCaptureType: FullResponse
+
+            - kind: ConditionGroup
+              id: cat5FoundGroup
+              conditions:
+                - id: cat5FoundItem
+                  condition: =!IsBlank(Topic.Result5)
+                  displayName: Cat 5 found?
+                  actions:
+                    - kind: InvokeAIBuilderModelAction
+                      id: cat5Format
+                      displayName: Cat 5 format
+                      input:
+                        binding:
+                          Request: =System.Activity.Text
+                          Results: =JSON(Topic.Result5)
+
+                      output:
+                        binding:
+                          predictionOutput: Topic.Cards1
+
+                      aIModelId: 0ebaeea6-27e7-43bc-96e7-a6b73595c04f
+
+                    - kind: SendActivity
+                      id: cat5Show
+                      displayName: Cat 5 show
+                      activity: "{Topic.Cards1.text}"
+
+              elseActions:
+                - kind: SearchAndSummarizeContent
+                  id: cat5Retry
+                  displayName: Cat 5 retry
+                  autoSend: false
+                  variable: Topic.Result5b
+                  userInput: ="recommend " & Topic.Name5 & " " & Lower(Trim(First(Split(Topic.ProfileName, "·")).Value))
+                  moderationLevel: Low
+                  additionalInstructions: List up to 3 products from www.petvalu.ca that match the request. For each, give the full product name, rating and review count if shown, and key features.
+                  fileSearchDataSource:
+                    searchFilesMode:
+                      kind: DoNotSearchFiles
+
+                  knowledgeSources:
+                    kind: SearchSpecificKnowledgeSources
+                    knowledgeSources:
+                      - ca_agent.knowledge.PublicSiteSearchSource.2
+
+                  applyModelKnowledgeSetting: false
+                  responseCaptureType: FullResponse
+
+                - kind: ConditionGroup
+                  id: cat5RetryFoundGroup
+                  conditions:
+                    - id: cat5RetryFoundItem
+                      condition: =!IsBlank(Topic.Result5b)
+                      displayName: Cat 5 retry found?
+                      actions:
+                        - kind: InvokeAIBuilderModelAction
+                          id: cat5RetryFormat
+                          displayName: Cat 5 retry format
+                          input:
+                            binding:
+                              Request: =System.Activity.Text
+                              Results: =JSON(Topic.Result5b)
+
+                          output:
+                            binding:
+                              predictionOutput: Topic.Cards1
+
+                          aIModelId: 0ebaeea6-27e7-43bc-96e7-a6b73595c04f
+
+                        - kind: SendActivity
+                          id: cat5RetryShow
+                          displayName: Cat 5 retry show
+                          activity: "{Topic.Cards1.text}"
+
+                  elseActions:
+                    - kind: SendActivity
+                      id: cat5NoMatch
+                      displayName: Cat 5 no match
+                      activity: We couldn't find products for this one right now. Try searching petvalu.ca for it.
+
+    - kind: SendActivity
+      id: closingMsg
+      displayName: Closing
+      activity: "⚠️ SAFETY FIRST: All information is general guidance. For health concerns, DPLs should consult a veterinarian. 💬 Provide Feedback"
+
+    - kind: CancelAllDialogs
+      id: endAllTopics
+      displayName: End
+
+inputType: {}
+outputType: {}
