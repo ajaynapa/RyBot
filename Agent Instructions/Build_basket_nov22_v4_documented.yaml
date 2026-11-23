@@ -1,0 +1,1113 @@
+# =============================================================================
+# TOPIC: Build basket                        (AVA Basket Builder, Copilot Studio)
+# =============================================================================
+# PURPOSE
+#   Turns an ACE's product question (e.g. "Recommend wet food for a 12-year-old
+#   small Dachshund, can't eat beef") into a "basket": a matched profile, an
+#   intro, and up to 5 product categories, each filled with products found on
+#   www.petvalu.ca. Messages are sent one by one, so the app can render the
+#   basket progressively as each category finishes.
+#
+# FLOW (top to bottom)
+#   1. Make plan ............ AI prompt maps the question to Basket Profiles and
+#                             returns ONE line: profile | pet details |
+#                             title1 | search1 | ... | title5 | search5
+#   2. Make plan retry ...... runs once more if the plan is missing or thin
+#   3. Split / Save plan .... breaks the line into variables (Name1-5, Search1-5)
+#                             with a built-in dog/cat fallback basket
+#   4. Write intros ......... AI prompt writes the basket intro + one line per
+#                             category ("Here are...", "Ask the DPL: ...")
+#   5. Show Profile ......... first message: intro, profile, category list
+#   6. Categories 1-5 ....... for each: heading -> website search -> format as
+#                             JSON product cards. If no products came back
+#                             (empty search OR format said "no match"), retry
+#                             once. Products -> send cards; still none -> send
+#                             a petvalu.ca search link.
+#   7. Closing + End ........ safety line, then end all topics so the agent
+#                             adds nothing after the basket.
+#
+# DEPENDENCIES (edit these in Copilot Studio, not in this file)
+#   Prompts (aIModelId):
+#     51c2e7ad-... = "Make plan"       holds the full PROFILE INDEX + mapping rules
+#     57a2808c-... = "Write intros"    basket intro and per-category lines
+#     0ebaeea6-... = "Format products" turns search text into the JSON array
+#                    [{productName, productUrl, rating, reviewCount, fitReason}]
+#   Knowledge sources (website search, products only):
+#     PublicSiteSearchSource.2                       = www.petvalu.ca
+#     PetValuProductPages_PNROqchFSdJmKy1uYfQJZ      = www.petvalu.ca/product
+#   Basket Profiles .md is NOT searched any more; it is the master copy used
+#   to regenerate the PROFILE INDEX inside the Make plan prompt.
+#
+# KEY VARIABLES
+#   Topic.PlanOut ........ raw plan line from Make plan (.text)
+#   Topic.Lines .......... plan split on "|"
+#   Topic.ProfileName .... e.g. "DOG · Senior · Small + DOG · Can't eat · Beef"
+#   Topic.PetDetails ..... e.g. "12-year-old small Dachshund, no beef"
+#   Topic.Name1..5 ....... category titles shown to the ACE
+#   Topic.Search1..5 ..... search phrases sent to the website search
+#   Topic.CatIntro1..5 ... one-line intro per category
+#   Topic.Result1..5(b) .. raw search answers (b = retry)
+#   Topic.Cards1 ......... raw output record of the Format products prompt
+#   Topic.CardsText ...... the category's product JSON as text; reset to ""
+#                          at the start of each category. Starts with "[" only
+#                          when real products were found.
+#   Topic.NoMatchQuery/Url  text and link for the "search petvalu.ca" fallback
+#
+# RULES THIS TOPIC ENFORCES
+#   - Products come only from the petvalu.ca website search (no files, no API).
+#   - Never shows prices or stock (enforced in the Format products prompt).
+#   - Health conditions still get a basket; the intro adds a vet reminder.
+#
+# MAINTENANCE NOTES
+#   - Copilot Studio may strip these comments when you save in its code editor.
+#     Keep this commented copy as the reference documentation.
+#   - Categories 2-5 are identical except for the number. Change all four.
+#   - Debug message only appears in the test pane (InTestMode), never to ACEs.
+# =============================================================================
+kind: AdaptiveDialog
+modelDescription: "Use ONLY when the ACE asks for products for a pet: \"recommend\", \"suggest\", \"what should I get\", \"what do I need for\", \"what's good for\", \"do we have\", \"looking for\", or names a product type (food, treats, chews, toys, litter, beds, carriers, supplements). Includes requests that mention allergies, foods to avoid, life stage, size, breed or needs. Do NOT use for general pet-care or how-to questions (e.g. \"travelling with my cat to the vet\", \"how do I trim my dog's nails\", \"how often should I feed my kitten\"), policy or store questions, specific product lookups by name or ID, symptom questions (what a symptom means or how to treat it). Requests for food or products for a pet with a health condition (e.g. kidney issues) DO use this topic."
+beginDialog:
+  kind: OnRecognizedIntent
+  id: main
+  intent: {}
+  actions:
+    # STEP 1 - MAKE PLAN
+    # Calls the "Make plan" prompt. Its instructions contain the full PROFILE INDEX
+    # (every Basket Profile with its items and search words), so no file search
+    # is needed. Input "Profile" is left blank on purpose (legacy input).
+    # Output (Topic.PlanOut.text), one line separated by "|":
+    #   profile names | pet details | title1 | search1 | ... | title5 | search5
+    - kind: InvokeAIBuilderModelAction
+      id: invokeAIBuilderModelAction_J3KfyF
+      displayName: Make plan
+      input:
+        binding:
+          Profile: =""
+          Request: =System.Activity.Text
+
+      output:
+        binding:
+          predictionOutput: Topic.PlanOut
+
+      aIModelId: 51c2e7ad-cdab-40c2-afb3-c98b3376d1a6
+
+    # STEP 2 - MAKE PLAN RETRY
+    # A good plan has at least 6 "|" fields (profile, pet details, and at least
+    # two title|search pairs). If it has fewer (blank, "Sorry...", a vet warning,
+    # or one item), run the same prompt once more and overwrite Topic.PlanOut.
+    # The retry reframes the request as a store shopping list ("not a request for
+    # medical advice") because health conditions such as pancreatitis can make the
+    # model answer with vet advice instead of the plan line.
+    - kind: ConditionGroup
+      id: planRetryGroup
+      conditions:
+        - id: planThinItem
+          condition: =CountRows(Split(Topic.PlanOut.text, "|")) < 6
+          displayName: Plan missing or thin?
+          actions:
+            - kind: InvokeAIBuilderModelAction
+              id: makePlanRetry
+              displayName: Make plan retry
+              input:
+                binding:
+                  Profile: =""
+                  Request: "=\"Store shopping-list request, not a request for medical advice. Reply with the plan line only. Request: \" & System.Activity.Text"
+
+              output:
+                binding:
+                  predictionOutput: Topic.PlanOut
+
+              aIModelId: 51c2e7ad-cdab-40c2-afb3-c98b3376d1a6
+
+    # STEP 3a - SPLIT PLAN (with last-resort fallback)
+    # Splits the plan line on "|" into Topic.Lines.
+    # If the plan is still thin after the retry (fewer than 6 fields), use a
+    # fixed fallback basket based on words in the ACE's question:
+    #   cat words (cat, kitten, feline, Persian, Siamese, Ragdoll, Maine Coon,
+    #   Bengal, Sphynx)                         -> FALLBACK · Cat
+    #   other pet words (rabbit, hamster, bird,
+    #   fish, gecko, turtle, ferret, ...)       -> empty (no dog/cat basket)
+    #   anything else (any dog or dog breed)    -> FALLBACK · Dog
+    # q pads the question with spaces so " cat" doesn't match inside other words.
+    - kind: SetVariable
+      id: setVariable_MDltu8
+      displayName: Split Plan
+      variable: Topic.Lines
+      value: |-
+        =With(
+            {q: " " & Lower(System.Activity.Text) & " "},
+            Split(
+                If(
+                    CountRows(Split(Topic.PlanOut.text, "|")) >= 6, Topic.PlanOut.text,
+                    CountRows(Filter(["cat","cats","kitten","kitty","feline","persian","siamese","ragdoll","maine coon","bengal","sphynx"], !IsBlank(Find(" " & Value, q)))) > 0, "FALLBACK · Cat|cat|Dry food|adult cat dry food|Wet food|cat wet food|Litter|cat litter|Treats|cat treats|Toy|cat toy",
+                    CountRows(Filter(["rabbit","bunny","guinea","hamster","gerbil","rat","mouse","mice","chinchilla","ferret","degu","hedgehog","bird","budgie","parakeet","cockatiel","conure","lovebird","parrot","canary","finch","fish","betta","goldfish","aquarium","cichlid","koi","reptile","gecko","dragon","turtle","tortoise","snake","frog","crab"], !IsBlank(Find(" " & Value, q)))) > 0, "",
+                    "FALLBACK · Dog|dog|Dry food|adult dog dry food|Treats|dog treats|Chews|dog chews|Toy|dog toy|Poop bags|dog poop bags"
+                ),
+                "|"
+            )
+        )
+
+    # STEP 3b - SAVE PLAN FIELDS
+    # Copies each field into its own variable and cleans up stray formatting
+    # the model sometimes adds ("Profile:", "Search:", "###", "**", "Item 1:").
+    # Field positions in Topic.Lines:
+    #   1 ProfileName  2 PetDetails  3 Name1  4 Search1  5 Name2  6 Search2
+    #   7 Name3  8 Search3  9 Name4  10 Search4  11 Name5  12 Search5
+    # Name1 falls back to "Top picks"; Search1 falls back to the ACE's question.
+    # A blank Name2-5 means that category is skipped later.
+    - kind: SetMultipleVariables
+      id: setVariable_LANasR
+      displayName: Save plan fields
+      assignments:
+        - variable: Topic.ProfileName
+          value: "=IfError(Trim(Substitute(Substitute(Substitute(Index(Topic.Lines, 1).Value, \"Profile:\", \"\"), \"#\", \"\"), \"*\", \"\")), \"\")"
+
+        - variable: Topic.PetDetails
+          value: =IfError(Trim(Substitute(Substitute(Index(Topic.Lines, 2).Value, "pet context:", ""), "Pet context:", "")), "")
+
+        - variable: Topic.Name1
+          value: "=With({x: IfError(Trim(Index(Topic.Lines, 3).Value), \"\")}, If(IsBlank(x), \"Top picks\", If(StartsWith(x, \"Item \"), Trim(Mid(x, Find(\":\", x) + 1)), x)))"
+
+        - variable: Topic.Search1
+          value: "=IfError(Trim(Substitute(Substitute(Substitute(Index(Topic.Lines, 4).Value, \"Search:\", \"\"), \"#\", \"\"), \"*\", \"\")), System.Activity.Text)"
+
+        - variable: Topic.Name2
+          value: "=With({x: IfError(Trim(Index(Topic.Lines, 5).Value), \"\")}, If(StartsWith(x, \"Item \"), Trim(Mid(x, Find(\":\", x) + 1)), x))"
+
+        - variable: Topic.Search2
+          value: "=IfError(Trim(Substitute(Substitute(Substitute(Index(Topic.Lines, 6).Value, \"Search:\", \"\"), \"#\", \"\"), \"*\", \"\")), \"\")"
+
+        - variable: Topic.Name3
+          value: "=With({x: IfError(Trim(Index(Topic.Lines, 7).Value), \"\")}, If(StartsWith(x, \"Item \"), Trim(Mid(x, Find(\":\", x) + 1)), x))"
+
+        - variable: Topic.Search3
+          value: "=IfError(Trim(Substitute(Substitute(Substitute(Index(Topic.Lines, 8).Value, \"Search:\", \"\"), \"#\", \"\"), \"*\", \"\")), \"\")"
+
+        - variable: Topic.Name4
+          value: "=With({x: IfError(Trim(Index(Topic.Lines, 9).Value), \"\")}, If(StartsWith(x, \"Item \"), Trim(Mid(x, Find(\":\", x) + 1)), x))"
+
+        - variable: Topic.Search4
+          value: "=IfError(Trim(Substitute(Substitute(Substitute(Index(Topic.Lines, 10).Value, \"Search:\", \"\"), \"#\", \"\"), \"*\", \"\")), \"\")"
+
+        - variable: Topic.Name5
+          value: "=With({x: IfError(Trim(Index(Topic.Lines, 11).Value), \"\")}, If(StartsWith(x, \"Item \"), Trim(Mid(x, Find(\":\", x) + 1)), x))"
+
+        - variable: Topic.Search5
+          value: "=IfError(Trim(Substitute(Substitute(Substitute(Index(Topic.Lines, 12).Value, \"Search:\", \"\"), \"#\", \"\"), \"*\", \"\")), \"\")"
+
+    # STEP 4 - WRITE INTROS
+    # Calls the "Write intros" prompt with the category titles, profile and
+    # question. Returns 6 fields separated by "|":
+    #   basket intro | category 1 line | ... | category 5 line
+    # Category lines start "Here are" / "Next up," / "To round out the basket,"
+    # and include an "Ask the DPL:" question. For health conditions the intro
+    # ends with a vet reminder.
+    - kind: InvokeAIBuilderModelAction
+      id: invokeAIBuilderModelAction_V3pO6s
+      displayName: Write intros
+      input:
+        binding:
+          Categories: =Topic.Name1 & " | " & Topic.Name2 & " | " & Topic.Name3 & " | " & Topic.Name4 & " | " & Topic.Name5
+          Profile: =Topic.ProfileName
+          Request: =System.Activity.Text
+
+      output:
+        binding:
+          predictionOutput: Topic.IntroOut
+
+      aIModelId: 57a2808c-99ed-4fd8-8854-2fccfa871bdf
+
+    # STEP 4a - Split the intros line on "|".
+    - kind: SetVariable
+      id: setVariable_CIgtWc
+      displayName: Split intros
+      variable: Topic.IntroLines
+      value: =Split(Topic.IntroOut.text, "|")
+
+    # STEP 4b - SAVE INTROS
+    # Intro falls back to a generic line if the prompt refused ("Sorry...")
+    # or returned no "|". CatIntro1-5 are blank if missing.
+    - kind: SetMultipleVariables
+      id: setVariable_l307I5
+      displayName: Save intros
+      assignments:
+        - variable: Topic.Intro
+          value: "=With({x: IfError(Trim(Index(Topic.IntroLines, 1).Value), \"\")}, If(StartsWith(x, \"Sorry\") || IsBlank(Find(\"|\", Topic.IntroOut.text)), \"Here are some options from our shelves.\", x))"
+
+        - variable: Topic.CatIntro1
+          value: =IfError(Trim(Index(Topic.IntroLines, 2).Value), "")
+
+        - variable: Topic.CatIntro2
+          value: =IfError(Trim(Index(Topic.IntroLines, 3).Value), "")
+
+        - variable: Topic.CatIntro3
+          value: =IfError(Trim(Index(Topic.IntroLines, 4).Value), "")
+
+        - variable: Topic.CatIntro4
+          value: =IfError(Trim(Index(Topic.IntroLines, 5).Value), "")
+
+        - variable: Topic.CatIntro5
+          value: =IfError(Trim(Index(Topic.IntroLines, 6).Value), "")
+
+    # STEP 5 - SHOW PROFILE (first message the ACE/app receives)
+    #   <intro>
+    #   Profile: <ProfileName>
+    #   In this basket: Name1 · Name2 · ...
+    # Arrives before any product search, so the app can draw skeleton cards.
+    - kind: SendActivity
+      id: sendActivity_jMaaf3
+      displayName: Show Profile
+      activity: "{Topic.Intro & If(IsBlank(Topic.ProfileName), \"\", Char(10) & Char(10) & \"Profile: \" & Topic.ProfileName & Char(10) & Char(10) & \"In this basket: \" & Topic.Name1 & If(IsBlank(Topic.Name2), \"\", \" · \" & Topic.Name2) & If(IsBlank(Topic.Name3), \"\", \" · \" & Topic.Name3) & If(IsBlank(Topic.Name4), \"\", \" · \" & Topic.Name4) & If(IsBlank(Topic.Name5), \"\", \" · \" & Topic.Name5))}"
+
+    # DEBUG (test pane only)
+    # Shows pet details, all 5 search phrases and the raw plan, so testers can
+    # see exactly what was searched. Hidden from ACEs and the PWA because it
+    # only runs when System.Conversation.InTestMode is true.
+    - kind: ConditionGroup
+      id: debugGroup
+      conditions:
+        - id: debugTestMode
+          condition: =System.Conversation.InTestMode = true
+          displayName: Test mode only
+          actions:
+            - kind: SendActivity
+              id: debugSearches
+              displayName: Debug searches
+              activity: "{\"🔧 TEST ONLY\" & Char(10) & Char(10) & \"Pet details: \" & Topic.PetDetails & Char(10) & Char(10) & \"Search 1: \" & If(IsBlank(Topic.Search1), System.Activity.Text, Topic.Search1) & Char(10) & Char(10) & \"Search 2: \" & Topic.Search2 & Char(10) & Char(10) & \"Search 3: \" & Topic.Search3 & Char(10) & Char(10) & \"Search 4: \" & Topic.Search4 & Char(10) & Char(10) & \"Search 5: \" & Topic.Search5 & Char(10) & Char(10) & \"Raw plan: \" & Topic.PlanOut.text}"
+
+    # =============================================================================
+    # CATEGORY 1 - the product type the ACE asked for (up to 5 products)
+    # =============================================================================
+    # Pattern used by every category:
+    #   reset CardsText -> search -> found? format
+    #   -> no products yet? (CardsText doesn't start with "[") retry search+format
+    #   -> has products? show cards : send petvalu.ca search link
+    # "No products" covers both an empty search AND a search that returned text
+    # the Format prompt couldn't turn into products ("I couldn't find...").
+    # Heading message: bold category title + its intro line.
+    - kind: SendActivity
+      id: sendActivity_6lagBm
+      displayName: Cat 1 heading
+      activity: "{\"**\" & Topic.Name1 & \"**\" & Char(10) & Char(10) & Topic.CatIntro1}"
+
+    # Clear CardsText so a previous category's products can't leak into this one.
+    - kind: SetVariable
+      id: cat1ResetCards
+      displayName: Cat 1 reset cards
+      variable: Topic.CardsText
+      value: "=\"\""
+
+    # Cat 1 search: website search for the plan's search phrase, phrased as
+    # a request ("recommend ...") because the generative answers step handles
+    # requests better than bare keywords. Falls back to the ACE's question.
+    # Files are not searched (DoNotSearchFiles); only the two petvalu.ca sources.
+    - kind: SearchAndSummarizeContent
+      id: CUIWtU
+      displayName: Cat.1 search
+      autoSend: false
+      variable: Topic.Result1
+      userInput: "=If(IsBlank(Topic.Search1), System.Activity.Text, \"recommend \" & Topic.Search1)"
+      moderationLevel: Low
+      additionalInstructions: "List up to 5 different products from www.petvalu.ca that match the request. For each, give the full product name, rating and review count if shown, and key features."
+      fileSearchDataSource:
+        searchFilesMode:
+          kind: DoNotSearchFiles
+
+      knowledgeSources:
+        kind: SearchSpecificKnowledgeSources
+        knowledgeSources:
+          - ca_agent.topic.PetValuProductPages_PNROqchFSdJmKy1uYfQJZ
+          - ca_agent.knowledge.PublicSiteSearchSource.2
+
+      applyModelKnowledgeSetting: false
+      responseCaptureType: FullResponse
+
+    # If the search returned any text, format it into the JSON product array
+    # and keep the result in CardsText.
+    - kind: ConditionGroup
+      id: cat1FoundGroup
+      conditions:
+        - id: cat1FoundItem
+          condition: "=!IsBlank(Topic.Result1)"
+          displayName: Cat 1 found?
+          actions:
+            - kind: InvokeAIBuilderModelAction
+              id: invokeAIBuilderModelAction_CPPn9J
+              displayName: Cat 1 format
+              input:
+                binding:
+                  Request: "=System.Activity.Text"
+                  Results: "=JSON(Topic.Result1)"
+
+              output:
+                binding:
+                  predictionOutput: Topic.Cards1
+
+              aIModelId: 0ebaeea6-27e7-43bc-96e7-a6b73595c04f
+
+            - kind: SetVariable
+              id: cat1SaveCards
+              displayName: Cat 1 save cards
+              variable: Topic.CardsText
+              value: "=Topic.Cards1.text"
+
+    # Retry once if there are still no products, using the ACE's original
+    # question as the search, then format again.
+    - kind: ConditionGroup
+      id: cat1NeedRetryGroup
+      conditions:
+        - id: cat1NeedRetryItem
+          condition: "=!StartsWith(Trim(Topic.CardsText), \"[\")"
+          displayName: Cat 1 no products yet?
+          actions:
+            - kind: SearchAndSummarizeContent
+              id: cat1Retry
+              displayName: Cat 1 retry
+              autoSend: false
+              variable: Topic.Result1b
+              userInput: "=System.Activity.Text"
+              moderationLevel: Low
+              additionalInstructions: "List up to 5 different products from www.petvalu.ca that match the request. For each, give the full product name, rating and review count if shown, and key features."
+              fileSearchDataSource:
+                searchFilesMode:
+                  kind: DoNotSearchFiles
+
+              knowledgeSources:
+                kind: SearchSpecificKnowledgeSources
+                knowledgeSources:
+                  - ca_agent.topic.PetValuProductPages_PNROqchFSdJmKy1uYfQJZ
+                  - ca_agent.knowledge.PublicSiteSearchSource.2
+
+              applyModelKnowledgeSetting: false
+              responseCaptureType: FullResponse
+
+            - kind: ConditionGroup
+              id: cat1RetryFoundGroup
+              conditions:
+                - id: cat1RetryFoundItem
+                  condition: "=!IsBlank(Topic.Result1b)"
+                  displayName: Cat 1 retry found?
+                  actions:
+                    - kind: InvokeAIBuilderModelAction
+                      id: cat1RetryFormat
+                      displayName: Cat 1 retry format
+                      input:
+                        binding:
+                          Request: "=System.Activity.Text"
+                          Results: "=JSON(Topic.Result1b)"
+
+                      output:
+                        binding:
+                          predictionOutput: Topic.Cards1
+
+                      aIModelId: 0ebaeea6-27e7-43bc-96e7-a6b73595c04f
+
+                    - kind: SetVariable
+                      id: cat1RetrySaveCards
+                      displayName: Cat 1 retry save cards
+                      variable: Topic.CardsText
+                      value: "=Topic.Cards1.text"
+
+    # Products found -> send the JSON cards.
+    # None after the retry -> build the petvalu.ca search link:
+    #   1) search words: pet word from the profile + category title
+    #   2) URL-encode them (spaces -> %20, & -> %26, etc.)
+    #   3) send "We couldn't load products... [Search petvalu.ca for ...](url)"
+    - kind: ConditionGroup
+      id: cat1ShowGroup
+      conditions:
+        - id: cat1HasProducts
+          condition: "=StartsWith(Trim(Topic.CardsText), \"[\")"
+          displayName: Cat 1 has products?
+          actions:
+            - kind: SendActivity
+              id: cat1Show
+              displayName: Cat 1 show
+              activity: "{Topic.CardsText}"
+
+      elseActions:
+        - kind: SetVariable
+          id: cat1NoMatchQuery
+          displayName: Cat 1 no match query
+          variable: Topic.NoMatchQuery
+          value: "=Trim(With({p: Trim(First(Split(Topic.ProfileName, \"+\")).Value)}, Lower(If(StartsWith(Upper(p), \"SMALL PET\") || StartsWith(Upper(p), \"BIRD\") || StartsWith(Upper(p), \"FISH\") || StartsWith(Upper(p), \"REPTILE\") || StartsWith(Upper(p), \"FALLBACK\"), Trim(First(Split(Last(Split(p, \"·\")).Value, \"(\")).Value), Trim(First(Split(First(Split(p, \"·\")).Value, \"(\")).Value)))) & \" \" & Lower(Topic.Name1))"
+
+        - kind: SetVariable
+          id: cat1NoMatchUrl
+          displayName: Cat 1 no match link
+          variable: Topic.NoMatchUrl
+          value: "=\"https://www.petvalu.ca/search?query=\" & Substitute(Substitute(Substitute(Substitute(Substitute(Substitute(Substitute(Topic.NoMatchQuery, \"%\", \"%25\"), \"&\", \"%26\"), \"#\", \"%23\"), \"+\", \"%2B\"), \"(\", \"%28\"), \")\", \"%29\"), \" \", \"%20\")"
+
+        - kind: SendActivity
+          id: cat1NoMatch
+          displayName: Cat 1 no match
+          activity: "{\"We couldn't load products for this one right now. [Search petvalu.ca for \" & Topic.NoMatchQuery & \"](\" & Topic.NoMatchUrl & \")\"}"
+
+    # =============================================================================
+    # CATEGORY 2 - add-on category from the profile (up to 3 products)
+    # =============================================================================
+    # Runs only if the plan has a Name2. Same pattern as category 1.
+    # Categories 2-5 are identical apart from the number.
+    - kind: ConditionGroup
+      id: hasCat2Group
+      conditions:
+        - id: hasCat2Item
+          condition: "=!IsBlank(Topic.Name2)"
+          displayName: Has cat 2?
+          actions:
+            - kind: SendActivity
+              id: cat2Heading
+              displayName: Cat 2 heading
+              activity: "{\"**\" & Topic.Name2 & \"**\" & Char(10) & Char(10) & Topic.CatIntro2}"
+
+            - kind: SetVariable
+              id: cat2ResetCards
+              displayName: Cat 2 reset cards
+              variable: Topic.CardsText
+              value: "=\"\""
+
+            # Cat 2 search: "recommend " + the plan's search phrase (Search2).
+            # If Search2 is blank, builds one from the title + pet details.
+            - kind: SearchAndSummarizeContent
+              id: cat2Search
+              displayName: Cat 2 search
+              autoSend: false
+              variable: Topic.Result2
+              userInput: "=If(IsBlank(Topic.Search2), \"recommend \" & Topic.Name2 & \" for \" & Topic.PetDetails, \"recommend \" & Topic.Search2)"
+              moderationLevel: Low
+              additionalInstructions: "List up to 3 products from www.petvalu.ca that match the request. For each, give the full product name, rating and review count if shown, and key features."
+              fileSearchDataSource:
+                searchFilesMode:
+                  kind: DoNotSearchFiles
+
+              knowledgeSources:
+                kind: SearchSpecificKnowledgeSources
+                knowledgeSources:
+                  - ca_agent.topic.PetValuProductPages_PNROqchFSdJmKy1uYfQJZ
+                  - ca_agent.knowledge.PublicSiteSearchSource.2
+
+              applyModelKnowledgeSetting: false
+              responseCaptureType: FullResponse
+
+            # Format with the category's own phrase as the Request, so non-food items
+            # (toys, bowls, litter) are judged against the right need.
+            - kind: ConditionGroup
+              id: cat2FoundGroup
+              conditions:
+                - id: cat2FoundItem
+                  condition: "=!IsBlank(Topic.Result2)"
+                  displayName: Cat 2 found?
+                  actions:
+                    - kind: InvokeAIBuilderModelAction
+                      id: cat2Format
+                      displayName: Cat 2 format
+                      input:
+                        binding:
+                          Request: "=If(IsBlank(Topic.Search2), Topic.Name2, Topic.Search2)"
+                          Results: "=JSON(Topic.Result2)"
+
+                      output:
+                        binding:
+                          predictionOutput: Topic.Cards1
+
+                      aIModelId: 0ebaeea6-27e7-43bc-96e7-a6b73595c04f
+
+                    - kind: SetVariable
+                      id: cat2SaveCards
+                      displayName: Cat 2 save cards
+                      variable: Topic.CardsText
+                      value: "=Topic.Cards1.text"
+
+            # No products yet -> retry with a shorter phrase, "recommend <title> <pet
+            # word>", where the pet word comes from the profile (dog / cat / species).
+            - kind: ConditionGroup
+              id: cat2NeedRetryGroup
+              conditions:
+                - id: cat2NeedRetryItem
+                  condition: "=!StartsWith(Trim(Topic.CardsText), \"[\")"
+                  displayName: Cat 2 no products yet?
+                  actions:
+                    - kind: SearchAndSummarizeContent
+                      id: cat2Retry
+                      displayName: Cat 2 retry
+                      autoSend: false
+                      variable: Topic.Result2b
+                      userInput: "=\"recommend \" & Topic.Name2 & \" \" & With({p: Trim(First(Split(Topic.ProfileName, \"+\")).Value)}, Lower(If(StartsWith(Upper(p), \"SMALL PET\") || StartsWith(Upper(p), \"BIRD\") || StartsWith(Upper(p), \"FISH\") || StartsWith(Upper(p), \"REPTILE\") || StartsWith(Upper(p), \"FALLBACK\"), Trim(Last(Split(p, \"·\")).Value), Trim(First(Split(p, \"·\")).Value))))"
+                      moderationLevel: Low
+                      additionalInstructions: "List up to 3 products from www.petvalu.ca that match the request. For each, give the full product name, rating and review count if shown, and key features."
+                      fileSearchDataSource:
+                        searchFilesMode:
+                          kind: DoNotSearchFiles
+
+                      knowledgeSources:
+                        kind: SearchSpecificKnowledgeSources
+                        knowledgeSources:
+                          - ca_agent.topic.PetValuProductPages_PNROqchFSdJmKy1uYfQJZ
+                          - ca_agent.knowledge.PublicSiteSearchSource.2
+
+                      applyModelKnowledgeSetting: false
+                      responseCaptureType: FullResponse
+
+                    - kind: ConditionGroup
+                      id: cat2RetryFoundGroup
+                      conditions:
+                        - id: cat2RetryFoundItem
+                          condition: "=!IsBlank(Topic.Result2b)"
+                          displayName: Cat 2 retry found?
+                          actions:
+                            - kind: InvokeAIBuilderModelAction
+                              id: cat2RetryFormat
+                              displayName: Cat 2 retry format
+                              input:
+                                binding:
+                                  Request: "=If(IsBlank(Topic.Search2), Topic.Name2, Topic.Search2)"
+                                  Results: "=JSON(Topic.Result2b)"
+
+                              output:
+                                binding:
+                                  predictionOutput: Topic.Cards1
+
+                              aIModelId: 0ebaeea6-27e7-43bc-96e7-a6b73595c04f
+
+                            - kind: SetVariable
+                              id: cat2RetrySaveCards
+                              displayName: Cat 2 retry save cards
+                              variable: Topic.CardsText
+                              value: "=Topic.Cards1.text"
+
+            # Products -> send cards. None -> petvalu.ca search link (see Category 1).
+            - kind: ConditionGroup
+              id: cat2ShowGroup
+              conditions:
+                - id: cat2HasProducts
+                  condition: "=StartsWith(Trim(Topic.CardsText), \"[\")"
+                  displayName: Cat 2 has products?
+                  actions:
+                    - kind: SendActivity
+                      id: cat2Show
+                      displayName: Cat 2 show
+                      activity: "{Topic.CardsText}"
+
+              elseActions:
+                - kind: SetVariable
+                  id: cat2NoMatchQuery
+                  displayName: Cat 2 no match query
+                  variable: Topic.NoMatchQuery
+                  value: "=Trim(With({p: Trim(First(Split(Topic.ProfileName, \"+\")).Value)}, Lower(If(StartsWith(Upper(p), \"SMALL PET\") || StartsWith(Upper(p), \"BIRD\") || StartsWith(Upper(p), \"FISH\") || StartsWith(Upper(p), \"REPTILE\") || StartsWith(Upper(p), \"FALLBACK\"), Trim(First(Split(Last(Split(p, \"·\")).Value, \"(\")).Value), Trim(First(Split(First(Split(p, \"·\")).Value, \"(\")).Value)))) & \" \" & Lower(Topic.Name2))"
+
+                - kind: SetVariable
+                  id: cat2NoMatchUrl
+                  displayName: Cat 2 no match link
+                  variable: Topic.NoMatchUrl
+                  value: "=\"https://www.petvalu.ca/search?query=\" & Substitute(Substitute(Substitute(Substitute(Substitute(Substitute(Substitute(Topic.NoMatchQuery, \"%\", \"%25\"), \"&\", \"%26\"), \"#\", \"%23\"), \"+\", \"%2B\"), \"(\", \"%28\"), \")\", \"%29\"), \" \", \"%20\")"
+
+                - kind: SendActivity
+                  id: cat2NoMatch
+                  displayName: Cat 2 no match
+                  activity: "{\"We couldn't load products for this one right now. [Search petvalu.ca for \" & Topic.NoMatchQuery & \"](\" & Topic.NoMatchUrl & \")\"}"
+
+    # =============================================================================
+    # CATEGORY 3 - add-on category from the profile (up to 3 products)
+    # =============================================================================
+    # Runs only if the plan has a Name3. Same pattern as category 1.
+    # Categories 2-5 are identical apart from the number.
+    - kind: ConditionGroup
+      id: hasCat3Group
+      conditions:
+        - id: hasCat3Item
+          condition: "=!IsBlank(Topic.Name3)"
+          displayName: Has cat 3?
+          actions:
+            - kind: SendActivity
+              id: cat3Heading
+              displayName: Cat 3 heading
+              activity: "{\"**\" & Topic.Name3 & \"**\" & Char(10) & Char(10) & Topic.CatIntro3}"
+
+            - kind: SetVariable
+              id: cat3ResetCards
+              displayName: Cat 3 reset cards
+              variable: Topic.CardsText
+              value: "=\"\""
+
+            # Cat 3 search: "recommend " + the plan's search phrase (Search3).
+            # If Search3 is blank, builds one from the title + pet details.
+            - kind: SearchAndSummarizeContent
+              id: cat3Search
+              displayName: Cat 3 search
+              autoSend: false
+              variable: Topic.Result3
+              userInput: "=If(IsBlank(Topic.Search3), \"recommend \" & Topic.Name3 & \" for \" & Topic.PetDetails, \"recommend \" & Topic.Search3)"
+              moderationLevel: Low
+              additionalInstructions: "List up to 3 products from www.petvalu.ca that match the request. For each, give the full product name, rating and review count if shown, and key features."
+              fileSearchDataSource:
+                searchFilesMode:
+                  kind: DoNotSearchFiles
+
+              knowledgeSources:
+                kind: SearchSpecificKnowledgeSources
+                knowledgeSources:
+                  - ca_agent.topic.PetValuProductPages_PNROqchFSdJmKy1uYfQJZ
+                  - ca_agent.knowledge.PublicSiteSearchSource.2
+
+              applyModelKnowledgeSetting: false
+              responseCaptureType: FullResponse
+
+            # Format with the category's own phrase as the Request, so non-food items
+            # (toys, bowls, litter) are judged against the right need.
+            - kind: ConditionGroup
+              id: cat3FoundGroup
+              conditions:
+                - id: cat3FoundItem
+                  condition: "=!IsBlank(Topic.Result3)"
+                  displayName: Cat 3 found?
+                  actions:
+                    - kind: InvokeAIBuilderModelAction
+                      id: cat3Format
+                      displayName: Cat 3 format
+                      input:
+                        binding:
+                          Request: "=If(IsBlank(Topic.Search3), Topic.Name3, Topic.Search3)"
+                          Results: "=JSON(Topic.Result3)"
+
+                      output:
+                        binding:
+                          predictionOutput: Topic.Cards1
+
+                      aIModelId: 0ebaeea6-27e7-43bc-96e7-a6b73595c04f
+
+                    - kind: SetVariable
+                      id: cat3SaveCards
+                      displayName: Cat 3 save cards
+                      variable: Topic.CardsText
+                      value: "=Topic.Cards1.text"
+
+            # No products yet -> retry with a shorter phrase, "recommend <title> <pet
+            # word>", where the pet word comes from the profile (dog / cat / species).
+            - kind: ConditionGroup
+              id: cat3NeedRetryGroup
+              conditions:
+                - id: cat3NeedRetryItem
+                  condition: "=!StartsWith(Trim(Topic.CardsText), \"[\")"
+                  displayName: Cat 3 no products yet?
+                  actions:
+                    - kind: SearchAndSummarizeContent
+                      id: cat3Retry
+                      displayName: Cat 3 retry
+                      autoSend: false
+                      variable: Topic.Result3b
+                      userInput: "=\"recommend \" & Topic.Name3 & \" \" & With({p: Trim(First(Split(Topic.ProfileName, \"+\")).Value)}, Lower(If(StartsWith(Upper(p), \"SMALL PET\") || StartsWith(Upper(p), \"BIRD\") || StartsWith(Upper(p), \"FISH\") || StartsWith(Upper(p), \"REPTILE\") || StartsWith(Upper(p), \"FALLBACK\"), Trim(Last(Split(p, \"·\")).Value), Trim(First(Split(p, \"·\")).Value))))"
+                      moderationLevel: Low
+                      additionalInstructions: "List up to 3 products from www.petvalu.ca that match the request. For each, give the full product name, rating and review count if shown, and key features."
+                      fileSearchDataSource:
+                        searchFilesMode:
+                          kind: DoNotSearchFiles
+
+                      knowledgeSources:
+                        kind: SearchSpecificKnowledgeSources
+                        knowledgeSources:
+                          - ca_agent.topic.PetValuProductPages_PNROqchFSdJmKy1uYfQJZ
+                          - ca_agent.knowledge.PublicSiteSearchSource.2
+
+                      applyModelKnowledgeSetting: false
+                      responseCaptureType: FullResponse
+
+                    - kind: ConditionGroup
+                      id: cat3RetryFoundGroup
+                      conditions:
+                        - id: cat3RetryFoundItem
+                          condition: "=!IsBlank(Topic.Result3b)"
+                          displayName: Cat 3 retry found?
+                          actions:
+                            - kind: InvokeAIBuilderModelAction
+                              id: cat3RetryFormat
+                              displayName: Cat 3 retry format
+                              input:
+                                binding:
+                                  Request: "=If(IsBlank(Topic.Search3), Topic.Name3, Topic.Search3)"
+                                  Results: "=JSON(Topic.Result3b)"
+
+                              output:
+                                binding:
+                                  predictionOutput: Topic.Cards1
+
+                              aIModelId: 0ebaeea6-27e7-43bc-96e7-a6b73595c04f
+
+                            - kind: SetVariable
+                              id: cat3RetrySaveCards
+                              displayName: Cat 3 retry save cards
+                              variable: Topic.CardsText
+                              value: "=Topic.Cards1.text"
+
+            # Products -> send cards. None -> petvalu.ca search link (see Category 1).
+            - kind: ConditionGroup
+              id: cat3ShowGroup
+              conditions:
+                - id: cat3HasProducts
+                  condition: "=StartsWith(Trim(Topic.CardsText), \"[\")"
+                  displayName: Cat 3 has products?
+                  actions:
+                    - kind: SendActivity
+                      id: cat3Show
+                      displayName: Cat 3 show
+                      activity: "{Topic.CardsText}"
+
+              elseActions:
+                - kind: SetVariable
+                  id: cat3NoMatchQuery
+                  displayName: Cat 3 no match query
+                  variable: Topic.NoMatchQuery
+                  value: "=Trim(With({p: Trim(First(Split(Topic.ProfileName, \"+\")).Value)}, Lower(If(StartsWith(Upper(p), \"SMALL PET\") || StartsWith(Upper(p), \"BIRD\") || StartsWith(Upper(p), \"FISH\") || StartsWith(Upper(p), \"REPTILE\") || StartsWith(Upper(p), \"FALLBACK\"), Trim(First(Split(Last(Split(p, \"·\")).Value, \"(\")).Value), Trim(First(Split(First(Split(p, \"·\")).Value, \"(\")).Value)))) & \" \" & Lower(Topic.Name3))"
+
+                - kind: SetVariable
+                  id: cat3NoMatchUrl
+                  displayName: Cat 3 no match link
+                  variable: Topic.NoMatchUrl
+                  value: "=\"https://www.petvalu.ca/search?query=\" & Substitute(Substitute(Substitute(Substitute(Substitute(Substitute(Substitute(Topic.NoMatchQuery, \"%\", \"%25\"), \"&\", \"%26\"), \"#\", \"%23\"), \"+\", \"%2B\"), \"(\", \"%28\"), \")\", \"%29\"), \" \", \"%20\")"
+
+                - kind: SendActivity
+                  id: cat3NoMatch
+                  displayName: Cat 3 no match
+                  activity: "{\"We couldn't load products for this one right now. [Search petvalu.ca for \" & Topic.NoMatchQuery & \"](\" & Topic.NoMatchUrl & \")\"}"
+
+    # =============================================================================
+    # CATEGORY 4 - add-on category from the profile (up to 3 products)
+    # =============================================================================
+    # Runs only if the plan has a Name4. Same pattern as category 1.
+    # Categories 2-5 are identical apart from the number.
+    - kind: ConditionGroup
+      id: hasCat4Group
+      conditions:
+        - id: hasCat4Item
+          condition: "=!IsBlank(Topic.Name4)"
+          displayName: Has cat 4?
+          actions:
+            - kind: SendActivity
+              id: cat4Heading
+              displayName: Cat 4 heading
+              activity: "{\"**\" & Topic.Name4 & \"**\" & Char(10) & Char(10) & Topic.CatIntro4}"
+
+            - kind: SetVariable
+              id: cat4ResetCards
+              displayName: Cat 4 reset cards
+              variable: Topic.CardsText
+              value: "=\"\""
+
+            # Cat 4 search: "recommend " + the plan's search phrase (Search4).
+            # If Search4 is blank, builds one from the title + pet details.
+            - kind: SearchAndSummarizeContent
+              id: cat4Search
+              displayName: Cat 4 search
+              autoSend: false
+              variable: Topic.Result4
+              userInput: "=If(IsBlank(Topic.Search4), \"recommend \" & Topic.Name4 & \" for \" & Topic.PetDetails, \"recommend \" & Topic.Search4)"
+              moderationLevel: Low
+              additionalInstructions: "List up to 3 products from www.petvalu.ca that match the request. For each, give the full product name, rating and review count if shown, and key features."
+              fileSearchDataSource:
+                searchFilesMode:
+                  kind: DoNotSearchFiles
+
+              knowledgeSources:
+                kind: SearchSpecificKnowledgeSources
+                knowledgeSources:
+                  - ca_agent.topic.PetValuProductPages_PNROqchFSdJmKy1uYfQJZ
+                  - ca_agent.knowledge.PublicSiteSearchSource.2
+
+              applyModelKnowledgeSetting: false
+              responseCaptureType: FullResponse
+
+            # Format with the category's own phrase as the Request, so non-food items
+            # (toys, bowls, litter) are judged against the right need.
+            - kind: ConditionGroup
+              id: cat4FoundGroup
+              conditions:
+                - id: cat4FoundItem
+                  condition: "=!IsBlank(Topic.Result4)"
+                  displayName: Cat 4 found?
+                  actions:
+                    - kind: InvokeAIBuilderModelAction
+                      id: cat4Format
+                      displayName: Cat 4 format
+                      input:
+                        binding:
+                          Request: "=If(IsBlank(Topic.Search4), Topic.Name4, Topic.Search4)"
+                          Results: "=JSON(Topic.Result4)"
+
+                      output:
+                        binding:
+                          predictionOutput: Topic.Cards1
+
+                      aIModelId: 0ebaeea6-27e7-43bc-96e7-a6b73595c04f
+
+                    - kind: SetVariable
+                      id: cat4SaveCards
+                      displayName: Cat 4 save cards
+                      variable: Topic.CardsText
+                      value: "=Topic.Cards1.text"
+
+            # No products yet -> retry with a shorter phrase, "recommend <title> <pet
+            # word>", where the pet word comes from the profile (dog / cat / species).
+            - kind: ConditionGroup
+              id: cat4NeedRetryGroup
+              conditions:
+                - id: cat4NeedRetryItem
+                  condition: "=!StartsWith(Trim(Topic.CardsText), \"[\")"
+                  displayName: Cat 4 no products yet?
+                  actions:
+                    - kind: SearchAndSummarizeContent
+                      id: cat4Retry
+                      displayName: Cat 4 retry
+                      autoSend: false
+                      variable: Topic.Result4b
+                      userInput: "=\"recommend \" & Topic.Name4 & \" \" & With({p: Trim(First(Split(Topic.ProfileName, \"+\")).Value)}, Lower(If(StartsWith(Upper(p), \"SMALL PET\") || StartsWith(Upper(p), \"BIRD\") || StartsWith(Upper(p), \"FISH\") || StartsWith(Upper(p), \"REPTILE\") || StartsWith(Upper(p), \"FALLBACK\"), Trim(Last(Split(p, \"·\")).Value), Trim(First(Split(p, \"·\")).Value))))"
+                      moderationLevel: Low
+                      additionalInstructions: "List up to 3 products from www.petvalu.ca that match the request. For each, give the full product name, rating and review count if shown, and key features."
+                      fileSearchDataSource:
+                        searchFilesMode:
+                          kind: DoNotSearchFiles
+
+                      knowledgeSources:
+                        kind: SearchSpecificKnowledgeSources
+                        knowledgeSources:
+                          - ca_agent.topic.PetValuProductPages_PNROqchFSdJmKy1uYfQJZ
+                          - ca_agent.knowledge.PublicSiteSearchSource.2
+
+                      applyModelKnowledgeSetting: false
+                      responseCaptureType: FullResponse
+
+                    - kind: ConditionGroup
+                      id: cat4RetryFoundGroup
+                      conditions:
+                        - id: cat4RetryFoundItem
+                          condition: "=!IsBlank(Topic.Result4b)"
+                          displayName: Cat 4 retry found?
+                          actions:
+                            - kind: InvokeAIBuilderModelAction
+                              id: cat4RetryFormat
+                              displayName: Cat 4 retry format
+                              input:
+                                binding:
+                                  Request: "=If(IsBlank(Topic.Search4), Topic.Name4, Topic.Search4)"
+                                  Results: "=JSON(Topic.Result4b)"
+
+                              output:
+                                binding:
+                                  predictionOutput: Topic.Cards1
+
+                              aIModelId: 0ebaeea6-27e7-43bc-96e7-a6b73595c04f
+
+                            - kind: SetVariable
+                              id: cat4RetrySaveCards
+                              displayName: Cat 4 retry save cards
+                              variable: Topic.CardsText
+                              value: "=Topic.Cards1.text"
+
+            # Products -> send cards. None -> petvalu.ca search link (see Category 1).
+            - kind: ConditionGroup
+              id: cat4ShowGroup
+              conditions:
+                - id: cat4HasProducts
+                  condition: "=StartsWith(Trim(Topic.CardsText), \"[\")"
+                  displayName: Cat 4 has products?
+                  actions:
+                    - kind: SendActivity
+                      id: cat4Show
+                      displayName: Cat 4 show
+                      activity: "{Topic.CardsText}"
+
+              elseActions:
+                - kind: SetVariable
+                  id: cat4NoMatchQuery
+                  displayName: Cat 4 no match query
+                  variable: Topic.NoMatchQuery
+                  value: "=Trim(With({p: Trim(First(Split(Topic.ProfileName, \"+\")).Value)}, Lower(If(StartsWith(Upper(p), \"SMALL PET\") || StartsWith(Upper(p), \"BIRD\") || StartsWith(Upper(p), \"FISH\") || StartsWith(Upper(p), \"REPTILE\") || StartsWith(Upper(p), \"FALLBACK\"), Trim(First(Split(Last(Split(p, \"·\")).Value, \"(\")).Value), Trim(First(Split(First(Split(p, \"·\")).Value, \"(\")).Value)))) & \" \" & Lower(Topic.Name4))"
+
+                - kind: SetVariable
+                  id: cat4NoMatchUrl
+                  displayName: Cat 4 no match link
+                  variable: Topic.NoMatchUrl
+                  value: "=\"https://www.petvalu.ca/search?query=\" & Substitute(Substitute(Substitute(Substitute(Substitute(Substitute(Substitute(Topic.NoMatchQuery, \"%\", \"%25\"), \"&\", \"%26\"), \"#\", \"%23\"), \"+\", \"%2B\"), \"(\", \"%28\"), \")\", \"%29\"), \" \", \"%20\")"
+
+                - kind: SendActivity
+                  id: cat4NoMatch
+                  displayName: Cat 4 no match
+                  activity: "{\"We couldn't load products for this one right now. [Search petvalu.ca for \" & Topic.NoMatchQuery & \"](\" & Topic.NoMatchUrl & \")\"}"
+
+    # =============================================================================
+    # CATEGORY 5 - add-on category from the profile (up to 3 products)
+    # =============================================================================
+    # Runs only if the plan has a Name5. Same pattern as category 1.
+    # Categories 2-5 are identical apart from the number.
+    - kind: ConditionGroup
+      id: hasCat5Group
+      conditions:
+        - id: hasCat5Item
+          condition: "=!IsBlank(Topic.Name5)"
+          displayName: Has cat 5?
+          actions:
+            - kind: SendActivity
+              id: cat5Heading
+              displayName: Cat 5 heading
+              activity: "{\"**\" & Topic.Name5 & \"**\" & Char(10) & Char(10) & Topic.CatIntro5}"
+
+            - kind: SetVariable
+              id: cat5ResetCards
+              displayName: Cat 5 reset cards
+              variable: Topic.CardsText
+              value: "=\"\""
+
+            # Cat 5 search: "recommend " + the plan's search phrase (Search5).
+            # If Search5 is blank, builds one from the title + pet details.
+            - kind: SearchAndSummarizeContent
+              id: cat5Search
+              displayName: Cat 5 search
+              autoSend: false
+              variable: Topic.Result5
+              userInput: "=If(IsBlank(Topic.Search5), \"recommend \" & Topic.Name5 & \" for \" & Topic.PetDetails, \"recommend \" & Topic.Search5)"
+              moderationLevel: Low
+              additionalInstructions: "List up to 3 products from www.petvalu.ca that match the request. For each, give the full product name, rating and review count if shown, and key features."
+              fileSearchDataSource:
+                searchFilesMode:
+                  kind: DoNotSearchFiles
+
+              knowledgeSources:
+                kind: SearchSpecificKnowledgeSources
+                knowledgeSources:
+                  - ca_agent.topic.PetValuProductPages_PNROqchFSdJmKy1uYfQJZ
+                  - ca_agent.knowledge.PublicSiteSearchSource.2
+
+              applyModelKnowledgeSetting: false
+              responseCaptureType: FullResponse
+
+            # Format with the category's own phrase as the Request, so non-food items
+            # (toys, bowls, litter) are judged against the right need.
+            - kind: ConditionGroup
+              id: cat5FoundGroup
+              conditions:
+                - id: cat5FoundItem
+                  condition: "=!IsBlank(Topic.Result5)"
+                  displayName: Cat 5 found?
+                  actions:
+                    - kind: InvokeAIBuilderModelAction
+                      id: cat5Format
+                      displayName: Cat 5 format
+                      input:
+                        binding:
+                          Request: "=If(IsBlank(Topic.Search5), Topic.Name5, Topic.Search5)"
+                          Results: "=JSON(Topic.Result5)"
+
+                      output:
+                        binding:
+                          predictionOutput: Topic.Cards1
+
+                      aIModelId: 0ebaeea6-27e7-43bc-96e7-a6b73595c04f
+
+                    - kind: SetVariable
+                      id: cat5SaveCards
+                      displayName: Cat 5 save cards
+                      variable: Topic.CardsText
+                      value: "=Topic.Cards1.text"
+
+            # No products yet -> retry with a shorter phrase, "recommend <title> <pet
+            # word>", where the pet word comes from the profile (dog / cat / species).
+            - kind: ConditionGroup
+              id: cat5NeedRetryGroup
+              conditions:
+                - id: cat5NeedRetryItem
+                  condition: "=!StartsWith(Trim(Topic.CardsText), \"[\")"
+                  displayName: Cat 5 no products yet?
+                  actions:
+                    - kind: SearchAndSummarizeContent
+                      id: cat5Retry
+                      displayName: Cat 5 retry
+                      autoSend: false
+                      variable: Topic.Result5b
+                      userInput: "=\"recommend \" & Topic.Name5 & \" \" & With({p: Trim(First(Split(Topic.ProfileName, \"+\")).Value)}, Lower(If(StartsWith(Upper(p), \"SMALL PET\") || StartsWith(Upper(p), \"BIRD\") || StartsWith(Upper(p), \"FISH\") || StartsWith(Upper(p), \"REPTILE\") || StartsWith(Upper(p), \"FALLBACK\"), Trim(Last(Split(p, \"·\")).Value), Trim(First(Split(p, \"·\")).Value))))"
+                      moderationLevel: Low
+                      additionalInstructions: "List up to 3 products from www.petvalu.ca that match the request. For each, give the full product name, rating and review count if shown, and key features."
+                      fileSearchDataSource:
+                        searchFilesMode:
+                          kind: DoNotSearchFiles
+
+                      knowledgeSources:
+                        kind: SearchSpecificKnowledgeSources
+                        knowledgeSources:
+                          - ca_agent.topic.PetValuProductPages_PNROqchFSdJmKy1uYfQJZ
+                          - ca_agent.knowledge.PublicSiteSearchSource.2
+
+                      applyModelKnowledgeSetting: false
+                      responseCaptureType: FullResponse
+
+                    - kind: ConditionGroup
+                      id: cat5RetryFoundGroup
+                      conditions:
+                        - id: cat5RetryFoundItem
+                          condition: "=!IsBlank(Topic.Result5b)"
+                          displayName: Cat 5 retry found?
+                          actions:
+                            - kind: InvokeAIBuilderModelAction
+                              id: cat5RetryFormat
+                              displayName: Cat 5 retry format
+                              input:
+                                binding:
+                                  Request: "=If(IsBlank(Topic.Search5), Topic.Name5, Topic.Search5)"
+                                  Results: "=JSON(Topic.Result5b)"
+
+                              output:
+                                binding:
+                                  predictionOutput: Topic.Cards1
+
+                              aIModelId: 0ebaeea6-27e7-43bc-96e7-a6b73595c04f
+
+                            - kind: SetVariable
+                              id: cat5RetrySaveCards
+                              displayName: Cat 5 retry save cards
+                              variable: Topic.CardsText
+                              value: "=Topic.Cards1.text"
+
+            # Products -> send cards. None -> petvalu.ca search link (see Category 1).
+            - kind: ConditionGroup
+              id: cat5ShowGroup
+              conditions:
+                - id: cat5HasProducts
+                  condition: "=StartsWith(Trim(Topic.CardsText), \"[\")"
+                  displayName: Cat 5 has products?
+                  actions:
+                    - kind: SendActivity
+                      id: cat5Show
+                      displayName: Cat 5 show
+                      activity: "{Topic.CardsText}"
+
+              elseActions:
+                - kind: SetVariable
+                  id: cat5NoMatchQuery
+                  displayName: Cat 5 no match query
+                  variable: Topic.NoMatchQuery
+                  value: "=Trim(With({p: Trim(First(Split(Topic.ProfileName, \"+\")).Value)}, Lower(If(StartsWith(Upper(p), \"SMALL PET\") || StartsWith(Upper(p), \"BIRD\") || StartsWith(Upper(p), \"FISH\") || StartsWith(Upper(p), \"REPTILE\") || StartsWith(Upper(p), \"FALLBACK\"), Trim(First(Split(Last(Split(p, \"·\")).Value, \"(\")).Value), Trim(First(Split(First(Split(p, \"·\")).Value, \"(\")).Value)))) & \" \" & Lower(Topic.Name5))"
+
+                - kind: SetVariable
+                  id: cat5NoMatchUrl
+                  displayName: Cat 5 no match link
+                  variable: Topic.NoMatchUrl
+                  value: "=\"https://www.petvalu.ca/search?query=\" & Substitute(Substitute(Substitute(Substitute(Substitute(Substitute(Substitute(Topic.NoMatchQuery, \"%\", \"%25\"), \"&\", \"%26\"), \"#\", \"%23\"), \"+\", \"%2B\"), \"(\", \"%28\"), \")\", \"%29\"), \" \", \"%20\")"
+
+                - kind: SendActivity
+                  id: cat5NoMatch
+                  displayName: Cat 5 no match
+                  activity: "{\"We couldn't load products for this one right now. [Search petvalu.ca for \" & Topic.NoMatchQuery & \"](\" & Topic.NoMatchUrl & \")\"}"
+
+    # STEP 7 - CLOSING
+    # Safety line shown after every basket (the agent's own closing is skipped
+    # for this topic, see agent instructions).
+    - kind: SendActivity
+      id: closingMsg
+      displayName: Closing
+      activity: "⚠️ SAFETY FIRST: All information is general guidance. For health concerns, DPLs should consult a veterinarian. 💬 Provide Feedback"
+
+    # End all topics so the orchestrator doesn't add its own summary or
+    # extra products after the basket.
+    - kind: CancelAllDialogs
+      id: endAllTopics
+      displayName: End
+
+inputType: {}
+outputType: {}
